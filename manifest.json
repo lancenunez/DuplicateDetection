@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "Ivanti Typing Detector with pop3",
+  "version": "1.0",
+  "description": "Detect typing in Ivanti Subject & Description fields and send to n8n webhook",
+  "permissions": ["scripting", "activeTab"],
+  "host_permissions": ["https://swhealthdemo-try.trysaasiteu.com/*"],
+  "content_scripts": [
+    {
+      "matches": ["https://swhealthdemo-try.trysaasiteu.com/*"],
+      "js": ["content.js"],
+      "all_frames": true
+    }
+  ]
+}
