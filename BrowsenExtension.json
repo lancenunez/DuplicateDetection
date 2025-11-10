@@ -1,0 +1,232 @@
+{
+  "name": "DUPLICATE",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "duplicate-check",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        208,
+        160
+      ],
+      "id": "ca615ed8-0755-4ee4-a5ce-27cedfbe5b45",
+      "name": "New Ticket Webhook",
+      "webhookId": "30ed4ed3-58a6-4c15-a40a-f70788c1f635"
+    },
+    {
+      "parameters": {
+        "url": "https://swhealthdemo-try.trysaasiteu.com/api/odata/businessobject/incidents",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "$select",
+              "value": "IncidentNumber, Subject , Symptom"
+            },
+            {
+              "name": "$top",
+              "value": "={{ $json.top }}"
+            },
+            {
+              "name": "$skip",
+              "value": "={{ $json.skip }}"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "rest_api_key=9E7D8E238EE34F92B87F595841DD7079"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        496,
+        128
+      ],
+      "id": "e43dc3f4-ed65-4560-9f84-d14dd798db5a",
+      "name": "Get Ivanti Tickets"
+    },
+    {
+      "parameters": {
+        "jsCode": "const newTicket = $items(\"New Ticket Webhook\")[0].json.body || $items(\"New Ticket Webhook\")[0].json;\nconst ivantiTickets = $items(\"Get Ivanti Tickets\")[0].json.value;\n\nconst prompt = `\nYou are a helpful assistant that finds the most similar Ivanti ticket to a new ticket.\nNew Ticket: \"${newTicket.Subject}\"\n\nIvanti Tickets:\n${ivantiTickets.map(t => `- IncidentNumber: ${t.IncidentNumber}, Subject: ${t.Subject}, Symptom: ${t.Symptom}`).join(' | ')}\n\nReturn the most similar ticket in JSON like:\n{\"IncidentNumber\": <number>, \"Subject\": \"<subject>\", \"Symptom\": \"<symptom>\", \"similarity\": <score between 0 and 1>}\n`;\n\n// Escape quotes & line breaks\nconst safePrompt = prompt.replace(/\\n/g, ' ').replace(/\"/g, '\\\\\"');\n\n// Build full JSON as string\nconst payload = `{\n  \"model\": \"gpt-4o-mini\",\n  \"messages\": [\n    { \"role\": \"system\", \"content\": \"You are an assistant that finds the most similar ticket.\" },\n    { \"role\": \"user\", \"content\": \"${safePrompt}\" }\n  ],\n  \"temperature\": 0.2,\n  \"max_tokens\": 200\n}`;\n\nreturn [{ json: { payload } }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        848,
+        128
+      ],
+      "id": "daf9de5f-15e2-4dec-aa45-9e2ea1f7dfa4",
+      "name": "Compare Similarity"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"isDuplicate\": {{ $json[\"similarity\"] > 0.4 }},\n  \"similarity\": {{ $json[\"similarity\"] }},\n  \"bestMatchIncident\": \"{{ $json[\"bestMatchIncident\"][\"IncidentNumber\"] }}\",\n  \"Subject\": \"{{ $json[\"bestMatchIncident\"][\"Subject\"] }}\"\n}\n",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        1440,
+        128
+      ],
+      "id": "9571bf09-7266-493e-aa12-f487ecad9697",
+      "name": "Respond to Webhook"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -32,
+        -16
+      ],
+      "id": "5361f8ca-056f-440f-bc4e-f6cf5cab2e96",
+      "name": "When clicking ‘Execute workflow’"
+    },
+    {
+      "parameters": {
+        "jsCode": "// --- Get incoming data ---\nconst newTicket = $items(\"New Ticket Webhook\")[0].json.body || $items(\"New Ticket Webhook\")[0].json;\nconst ivantiTickets = $items(\"Get Ivanti Tickets\")[0].json.value;\n\n// --- Helper: normalize text ---\nfunction normalize(text) {\n  if (!text || typeof text !== 'string') return '';\n  return text.toLowerCase().replace(/[^a-z0-9 ]/g, ' ').replace(/\\s+/g, ' ').trim();\n}\n\n// --- Helper: cosine similarity ---\nfunction cosineSimilarity(a, b) {\n  const wordsA = normalize(a).split(' ');\n  const wordsB = normalize(b).split(' ');\n\n  const freqA = {};\n  const freqB = {};\n  for (const w of wordsA) freqA[w] = (freqA[w] || 0) + 1;\n  for (const w of wordsB) freqB[w] = (freqB[w] || 0) + 1;\n\n  const allWords = new Set([...wordsA, ...wordsB]);\n  let dot = 0, magA = 0, magB = 0;\n\n  for (const w of allWords) {\n    const aVal = freqA[w] || 0;\n    const bVal = freqB[w] || 0;\n    dot += aVal * bVal;\n    magA += aVal * aVal;\n    magB += bVal * bVal;\n  }\n\n  if (magA === 0 || magB === 0) return 0;\n  return dot / (Math.sqrt(magA) * Math.sqrt(magB));\n}\n\n// --- Find best match based on Subject ---\nlet bestMatch = { incident: null, score: 0 };\n\nfor (const t of ivantiTickets) {\n  const subjectScore = cosineSimilarity(newTicket.Subject, t.Subject);\n  if (subjectScore > bestMatch.score) {\n    bestMatch = { incident: t, score: subjectScore };\n  }\n}\n\n// --- Return result ---\nreturn [{\n  bestMatchIncident: bestMatch.incident || {},\n  similarity: bestMatch.score.toFixed(2)\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        784,
+        -128
+      ],
+      "id": "c5127745-1a54-4dd7-af84-62202ba7692d",
+      "name": "Compare Similarity1"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Authorization",
+              "value": "Bearer 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"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.payload }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1072,
+        128
+      ],
+      "id": "f901e197-0eff-4771-9d9b-b0311769aa28",
+      "name": "HTTP Request"
+    },
+    {
+      "parameters": {
+        "jsCode": "const response = $json;\nlet message = response.choices?.[0]?.message?.content || '{}';\n\n// Remove ```json and ``` if present\nmessage = message.replace(/```json\\s*/i, '').replace(/```/g, '').trim();\n\nlet result;\ntry {\n  result = JSON.parse(message);\n} catch {\n  result = {\n    IncidentNumber: null,\n    Subject: \"Unknown\",\n    Symptom: \"\",\n    similarity: 0\n  };\n}\n\nreturn [{\n  bestMatchIncident: {\n    IncidentNumber: result.IncidentNumber,\n    Subject: result.Subject,\n    Symptom: result.Symptom\n  },\n  similarity: result.similarity.toFixed ? result.similarity.toFixed(2) : String(result.similarity)\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1280,
+        128
+      ],
+      "id": "2b90250f-3451-4e77-8f36-190b279414bb",
+      "name": "Code"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "New Ticket Webhook": {
+      "main": [
+        [
+          {
+            "node": "Get Ivanti Tickets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Ivanti Tickets": {
+      "main": [
+        [
+          {
+            "node": "Compare Similarity",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compare Similarity": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Respond to Webhook": {
+      "main": [
+        []
+      ]
+    },
+    "HTTP Request": {
+      "main": [
+        [
+          {
+            "node": "Code",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "414e327c-bd18-4f61-b8ab-27f26683d42c",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "aca1f954ab351a1d5593af9ec0147c8b845c041e79eb56cb4443480fe1f2670c"
+  },
+  "id": "MydXj69PWWUWxTCO",
+  "tags": []
+}
